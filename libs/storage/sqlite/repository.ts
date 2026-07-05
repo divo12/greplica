@@ -407,6 +407,30 @@ export class SqliteRepository {
     return rows.map((row) => row.claim_id);
   }
 
+  /** Drop every fingerprint row for the given claims (e.g. once they are demoted). */
+  deleteAnchorFingerprints(claimIds: string[]): void {
+    if (claimIds.length === 0) return;
+    this.db.prepare(`DELETE FROM anchor_fingerprints WHERE claim_id IN (${placeholders(claimIds)})`).run(...claimIds);
+  }
+
+  /** The HEAD sha at which this repo's claims were last checked for drift, if ever. */
+  getFreshnessCheckpoint(repoId: string): string | undefined {
+    const row = this.db
+      .prepare("SELECT last_checked_sha FROM freshness_checkpoints WHERE repo_id = ?")
+      .get(repoId) as { last_checked_sha: string } | undefined;
+    return row?.last_checked_sha;
+  }
+
+  /** Record the HEAD sha the heal just checked up to (cache-aside checkpoint). */
+  setFreshnessCheckpoint(repoId: string, sha: string): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO freshness_checkpoints (repo_id, last_checked_sha, checked_at)
+         VALUES (?, ?, ?)`,
+      )
+      .run(repoId, sha, now());
+  }
+
   private insertProposalRecords(scopeId: string, memoryCommitId: string, proposal: MemoryCommitProposal): void {
     for (const component of proposal.creates.components ?? []) {
       this.db
