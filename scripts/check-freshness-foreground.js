@@ -52,4 +52,39 @@ const input = claimResult("c1", [anchor]);
 attachFreshness([input], repo, repoRoot);
 assert.equal(input.freshness, undefined, "attachFreshness does not mutate its input");
 
+// --- render: truth + `## Needs re-verification` section ---
+const { renderGraphContextMarkdown } = await import(new URL("dist/libs/knowledge-graph/graph-context/render.js", root));
+
+const claimItem = (id, truth, freshness, anchors = []) => ({
+  type: "claim", rank: 1, score: 1, signals: {}, about: [], evidence: [], code_anchors: anchors,
+  object: { id, kind: "fact", text: `text of ${id}`, truth, intent: "intended" }, freshness,
+});
+const freshV = { state: "fresh", reason: null, broken: [] };
+const staleV = { state: "stale", reason: "content", broken: [] };
+const unknownV = { state: "unknown", reason: null, broken: [] };
+const packet = (items) => ({
+  query: "q", search_config_version: "v", embedding_status: { checked_objects: 0, created: 0, reused: 0 },
+  claims: [], components: [], flows: [], sources: [], ranked_results: items,
+});
+
+const md = renderGraphContextMarkdown(packet([
+  claimItem("claim.fresh", "code_verified", freshV),
+  claimItem("claim.stale", "code_verified", staleV),
+  claimItem("claim.unknown", "code_verified", unknownV),
+]));
+
+const bestIdx = md.indexOf("## Best Claims");
+const reverifyIdx = md.indexOf("## Needs re-verification");
+assert.ok(reverifyIdx !== -1, "stale claims get a Needs re-verification section");
+assert.ok(md.indexOf("claim.stale") > reverifyIdx, "stale claim rendered under Needs re-verification");
+assert.ok(md.indexOf("claim.fresh") > bestIdx && md.indexOf("claim.fresh") < reverifyIdx, "fresh claim under Best Claims");
+assert.ok(md.indexOf("claim.unknown") > bestIdx && md.indexOf("claim.unknown") < reverifyIdx, "unknown claim stays under Best Claims");
+assert.ok(md.includes("code_verified"), "truth surfaced on claim lines");
+assert.ok(/unverifiable/i.test(md), "unknown claim carries an unverifiable caveat");
+assert.ok(/re-verify/i.test(md), "stale claim carries a re-verify instruction");
+
+// No stale claims -> the section is omitted (no noise on healthy packets).
+const mdClean = renderGraphContextMarkdown(packet([claimItem("claim.ok", "code_verified", freshV)]));
+assert.ok(!mdClean.includes("## Needs re-verification"), "no stale section when nothing drifted");
+
 console.log("Freshness foreground checks passed.");
