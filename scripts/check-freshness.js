@@ -34,6 +34,22 @@ assert.equal(mixed.reason, "content", "partial break + changed hash -> content")
 assert.equal(mixed.broken.length, 1, "content verdict still surfaces the structurally-broken anchor");
 assert.equal(mixed.broken[0].status, "missing_symbol", "the broken anchor is carried through");
 
+// Resolving anchor whose span can't be hashed now (unreadable file / resolver error) -> unknown.
+const unknown = classifyFreshness([check(resolvesAnchor, undefined, "h1")]);
+assert.equal(unknown.state, "unknown", "unreadable span -> unknown");
+assert.equal(unknown.reason, null, "unknown carries no drift reason");
+assert.equal(unknown.broken.length, 0, "unknown carries no broken anchors");
+
+// Undeterminable with no baseline either -> still unknown (we couldn't read the code).
+assert.equal(classifyFreshness([check(resolvesAnchor, undefined, undefined)]).state, "unknown", "no current hash -> unknown");
+
+// Real drift always beats unknown: a changed hash on any anchor still wins as content.
+assert.equal(
+  classifyFreshness([check(resolvesAnchor, undefined, "h1"), check(resolvesAnchor, "h2", "h1")]).state,
+  "stale",
+  "content drift beats unknown",
+);
+
 // --- storage layer: anchor_fingerprints table + repository ---
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
