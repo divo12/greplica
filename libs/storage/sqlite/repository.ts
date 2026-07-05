@@ -55,8 +55,6 @@ export interface ApplyAnchorInvalidationInput {
   proposal: MemoryCommitProposal;
   events: InvalidationEventInput[];
   commit: { title: string; summary?: string; git_commit_sha?: string };
-  /** Claims whose fingerprints to drop in the same txn (demoted claims). */
-  deleteFingerprintClaimIds?: string[];
 }
 
 export interface AnchorFingerprintRow {
@@ -358,10 +356,9 @@ export class SqliteRepository {
       }
 
       // Demoted claims are no longer code_verified, so drop their fingerprints
-      // (in the same txn) to keep the reverse file->claims index tight.
-      if (input.deleteFingerprintClaimIds !== undefined) {
-        this.deleteAnchorFingerprints(input.deleteFingerprintClaimIds);
-      }
+      // (in the same txn) to keep the reverse file->claims index tight. Derived
+      // from the events so every caller gets cleanup, not just the heal path.
+      this.deleteAnchorFingerprints(input.events.map((event) => event.original_claim_id));
 
       return commit.id;
     });

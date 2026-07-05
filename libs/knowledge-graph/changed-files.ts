@@ -6,27 +6,21 @@ import { execFileSync } from "node:child_process";
  * changes (`git status --porcelain`). The second half is what lets the heal catch
  * edits that haven't been committed yet — the SHA-gate's blind spot.
  *
- * Best effort: any git failure (no repo, bad sha) yields `[]`, so the caller can
- * fall back to a full sweep rather than crash the background pass.
+ * Returns `undefined` when the git probe fails (no repo, bad sha) — distinct
+ * from `[]` (nothing changed) — so the caller can full-sweep instead of
+ * silently skipping every claim.
  */
-export function changedFilesSince(repoRoot: string | undefined, sinceSha: string | undefined): string[] {
-  if (repoRoot === undefined) return [];
-  const files = new Set<string>();
-  for (const file of committedChanges(repoRoot, sinceSha)) files.add(file);
-  for (const file of uncommittedChanges(repoRoot)) files.add(file);
-  return [...files];
+export function changedFilesSince(repoRoot: string | undefined, sinceSha: string | undefined): string[] | undefined {
+  if (repoRoot === undefined) return undefined;
+  const committed = sinceSha === undefined ? [] : gitLines(repoRoot, ["diff", "--name-only", `${sinceSha}..HEAD`]);
+  const uncommitted = gitLines(repoRoot, ["status", "--porcelain"]);
+  if (committed === undefined || uncommitted === undefined) return undefined;
+  return [...new Set([...committed, ...uncommitted.map(porcelainPath)])];
 }
 
-function committedChanges(repoRoot: string, sinceSha: string | undefined): string[] {
-  if (sinceSha === undefined) return [];
-  const out = git(repoRoot, ["diff", "--name-only", `${sinceSha}..HEAD`]);
-  return out === undefined ? [] : nonEmptyLines(out);
-}
-
-function uncommittedChanges(repoRoot: string): string[] {
-  const out = git(repoRoot, ["status", "--porcelain"]);
-  if (out === undefined) return [];
-  return nonEmptyLines(out).map(porcelainPath);
+function gitLines(repoRoot: string, args: string[]): string[] | undefined {
+  const out = git(repoRoot, args);
+  return out === undefined ? undefined : nonEmptyLines(out);
 }
 
 /** Extract the path from a `git status --porcelain` line (rename shows `old -> new`). */

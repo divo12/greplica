@@ -12,12 +12,11 @@ import type { ClaimAnchorAuditResult } from "./code-anchors/types.js";
 import { scanDriftedClaims, type DriftScanError } from "./code-anchors/drift.js";
 import { CodeAnchorResolver } from "./code-anchors/resolver.js";
 import { hashAnchorSpan, statAnchorFile } from "./code-anchors/span-hash.js";
-import { classifyFreshness, type FreshnessVerdict } from "./code-anchors/freshness.js";
+import { classifyFreshness, hasContentDrift, type AnchorCheck, type FreshnessVerdict } from "./code-anchors/freshness.js";
 import { freshnessChecks, indexFingerprintsByClaim } from "./anchor-fingerprints.js";
 import { changedFilesSince } from "./changed-files.js";
 import { buildAnchorInvalidation, type ClaimDemotion } from "./anchor-invalidation.js";
-import { invalidationResolverStatuses } from "./invalidation.js";
-import type { ResolvedCodeAnchor, ResolvedCodeAnchorStatus } from "./code-anchors/types.js";
+import type { ResolvedCodeAnchorStatus } from "./code-anchors/types.js";
 import { gitHeadSha } from "../utils/git.js";
 import { defaultDatabasePath, openDatabase } from "../storage/sqlite/db.js";
 import type { AnchorFingerprintInput, SqliteRepository } from "../storage/sqlite/repository.js";
@@ -320,8 +319,8 @@ export class KnowledgeGraphService {
       try {
         const resolved = await resolver.resolveMany(input.repo_root, claim.code_anchors ?? []);
         rechecked += 1;
-        const verdict = classifyFreshness(freshnessChecks(resolved, storedByClaim.get(claim.id), input.repo_root));
-        const demotion = toDemotion(claim, verdict, resolved);
+        const checks = freshnessChecks(resolved, storedByClaim.get(claim.id), input.repo_root);
+        const demotion = toDemotion(claim, classifyFreshness(checks), checks);
         if (demotion !== undefined) demotions.push(demotion);
       } catch {
         // A resolver failure on one claim is skipped, never fatal to the pass.
@@ -342,7 +341,6 @@ export class KnowledgeGraphService {
       proposal,
       events,
       commit: { title: proposal.title, git_commit_sha: headSha },
-      deleteFingerprintClaimIds: demoted,
     });
 
     // Embed the rebuilt claims so they stay retrievable via graph context.
@@ -366,6 +364,7 @@ export class KnowledgeGraphService {
     const codeVerified = claims.filter((claim) => claim.truth === "code_verified" && (claim.code_anchors?.length ?? 0) > 0);
     if (sinceSha === undefined) return codeVerified; // first run / no checkpoint -> full sweep
     const changed = changedFilesSince(repoRoot, sinceSha);
+    if (changed === undefined) return codeVerified; // git probe failed -> full sweep, don't silently skip
     if (changed.length === 0) return [];
     const affected = new Set(this.repository.claimIdsForFiles(changed)); // reverse index
     return codeVerified.filter((claim) => affected.has(claim.id));
@@ -377,13 +376,12 @@ export class KnowledgeGraphService {
 
 }
 
-const brokenAnchorStatuses: ReadonlySet<ResolvedCodeAnchorStatus> = new Set(invalidationResolverStatuses);
-
 /** Map a freshness verdict to a demotion, or undefined when the claim must be left alone. */
-function toDemotion(claim: Claim, verdict: FreshnessVerdict, resolved: ResolvedCodeAnchor[]): ClaimDemotion | undefined {
+function toDemotion(claim: Claim, verdict: FreshnessVerdict, checks: AnchorCheck[]): ClaimDemotion | undefined {
   if (verdict.state !== "stale") return undefined; // fresh or unknown -> never demote
   if (verdict.reason === "content") {
-    return { claim, reason: "content", anchors: resolved.filter((anchor) => !brokenAnchorStatuses.has(anchor.status)) };
+    // Only the anchors whose hash actually drifted, so the audit event names them accurately.
+    return { claim, reason: "content", anchors: checks.filter(hasContentDrift).map((check) => check.anchor) };
   }
   return { claim, reason: "structural", anchors: verdict.broken };
 }

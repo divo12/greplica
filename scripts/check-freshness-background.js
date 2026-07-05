@@ -42,9 +42,9 @@ assert.ok(changed.includes("a.ts"), "committed change since sinceSha is caught")
 const headSha2 = git(gitRepo, "rev-parse", "HEAD");
 assert.deepEqual(changedFilesSince(gitRepo, headSha2), [], "clean tree at HEAD -> no changes");
 
-// Non-git / unreadable -> [] (caller falls back), never throws.
-assert.deepEqual(changedFilesSince(mkdtempSync(join(tmpdir(), "greplica-nogit-")), headSha), [], "no git -> empty");
-assert.deepEqual(changedFilesSince(undefined, undefined), [], "no repo root -> empty");
+// Git probe failure -> undefined (distinct from [] clean), so the caller full-sweeps.
+assert.equal(changedFilesSince(mkdtempSync(join(tmpdir(), "greplica-nogit-")), headSha), undefined, "no git -> undefined");
+assert.equal(changedFilesSince(undefined, undefined), undefined, "no repo root -> undefined");
 
 // ---------------------------------------------------------------------------
 // freshness checkpoint + fingerprint deletion (repository)
@@ -138,6 +138,11 @@ chmodSync(join(healRoot, "b.ts"), 0o000);
 const sweep = await healSvc.healDriftedAnchors(healRef);
 chmodSync(join(healRoot, "b.ts"), 0o644);
 assert.ok(!sweep.demoted.includes("claim.b"), "unreadable (unknown) claim is not demoted");
+
+// Bad checkpoint sha -> git probe fails -> full sweep (never a silent skip).
+writeFileSync(join(healRoot, "b.ts"), "export function fb() { return 12345; }\n");
+const badSha = await healSvc.healDriftedAnchors(healRef, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+assert.deepEqual(badSha.demoted, ["claim.b"], "bad checkpoint sha -> full sweep demotes the drifted claim");
 
 // Checkpoint advanced to the current HEAD.
 assert.equal(healRepo.getFreshnessCheckpoint(healSvc.requireRepo(healRef).repo_id), head, "checkpoint set to HEAD");
