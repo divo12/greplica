@@ -67,4 +67,29 @@ assert.equal(cpRepo.fingerprintsForClaims(["cx"]).length, 1, "fingerprint writte
 cpRepo.deleteAnchorFingerprints(["cx"]);
 assert.equal(cpRepo.fingerprintsForClaims(["cx"]).length, 0, "fingerprints deleted for demoted claim");
 
+// ---------------------------------------------------------------------------
+// buildAnchorInvalidation generalizes to content drift (not just structural)
+// ---------------------------------------------------------------------------
+const { buildAnchorInvalidation } = await import(new URL("dist/libs/knowledge-graph/anchor-invalidation.js", root));
+
+const demotedClaim = { id: "claim.c", kind: "fact", text: "t", truth: "code_verified", intent: "intended", code_anchors: [{ file: "a.ts", symbol: "f" }] };
+const miniGraph = { components: [], flows: [], claims: [demotedClaim], sources: [], edges: [] };
+
+// content drift: the anchor still resolves, but its span changed.
+const contentPlan = buildAnchorInvalidation(
+  [{ claim: demotedClaim, reason: "content", anchors: [{ file: "a.ts", symbol: "f", status: "resolved", start_line: 1, end_line: 1 }] }],
+  miniGraph,
+);
+assert.equal(contentPlan.events[0].reason, "content_drift", "content demotion -> content_drift event");
+assert.equal(contentPlan.events[0].resolver_status, "resolved", "content event records the resolving status");
+assert.ok(contentPlan.proposal.creates.claims.some((c) => c.truth === "unknown"), "content demotion rebuilds a truth:unknown claim");
+
+// structural drift: unchanged behavior (broken anchor + anchor_drift reason).
+const structuralPlan = buildAnchorInvalidation(
+  [{ claim: demotedClaim, reason: "structural", anchors: [{ file: "a.ts", symbol: "f", status: "missing_symbol" }] }],
+  miniGraph,
+);
+assert.equal(structuralPlan.events[0].reason, "anchor_drift", "structural demotion -> anchor_drift event");
+assert.equal(structuralPlan.events[0].resolver_status, "missing_symbol", "structural event records the drift status");
+
 console.log("Freshness background checks passed.");

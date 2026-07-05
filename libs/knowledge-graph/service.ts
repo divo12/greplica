@@ -13,7 +13,7 @@ import { scanDriftedClaims, type DriftScanError } from "./code-anchors/drift.js"
 import { CodeAnchorResolver } from "./code-anchors/resolver.js";
 import { hashAnchorSpan, statAnchorFile } from "./code-anchors/span-hash.js";
 import { buildAnchorInvalidation } from "./anchor-invalidation.js";
-import type { InvalidationResolverStatus } from "./invalidation.js";
+import type { ResolvedCodeAnchorStatus } from "./code-anchors/types.js";
 import { gitHeadSha } from "../utils/git.js";
 import { defaultDatabasePath, openDatabase } from "../storage/sqlite/db.js";
 import type { AnchorFingerprintInput, SqliteRepository } from "../storage/sqlite/repository.js";
@@ -62,7 +62,7 @@ export interface AnchorInvalidationRecord {
   claim_id: string;
   superseding_claim_id: string;
   broken_anchor: string;
-  resolver_status: InvalidationResolverStatus;
+  resolver_status: ResolvedCodeAnchorStatus;
 }
 
 export interface AnchorInvalidationResult {
@@ -253,7 +253,9 @@ export class KnowledgeGraphService {
 
     // buildAnchorInvalidation already returns a normalized proposal (edge ids
     // minted via an in-memory graph lookup), so no further normalization here.
-    const { proposal, events } = buildAnchorInvalidation(drifted, graph);
+    // scanDriftedClaims only finds structural drift, so every demotion is structural.
+    const demotions = drifted.map((d) => ({ claim: d.claim, reason: "structural" as const, anchors: d.broken }));
+    const { proposal, events } = buildAnchorInvalidation(demotions, graph);
     const working = this.repository.requireWorkingScope(initialized.repo_id);
     const { memory_commit_id } = this.repository.applyAnchorInvalidation({
       repoId: initialized.repo_id,
