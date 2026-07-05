@@ -12,8 +12,12 @@ import type { ClaimAnchorAuditResult } from "./code-anchors/types.js";
 import { scanDriftedClaims, type DriftScanError } from "./code-anchors/drift.js";
 import { CodeAnchorResolver } from "./code-anchors/resolver.js";
 import { hashAnchorSpan, statAnchorFile } from "./code-anchors/span-hash.js";
-import { buildAnchorInvalidation } from "./anchor-invalidation.js";
-import type { ResolvedCodeAnchorStatus } from "./code-anchors/types.js";
+import { classifyFreshness, type FreshnessVerdict } from "./code-anchors/freshness.js";
+import { freshnessChecks, indexFingerprintsByClaim } from "./anchor-fingerprints.js";
+import { changedFilesSince } from "./changed-files.js";
+import { buildAnchorInvalidation, type ClaimDemotion } from "./anchor-invalidation.js";
+import { invalidationResolverStatuses } from "./invalidation.js";
+import type { ResolvedCodeAnchor, ResolvedCodeAnchorStatus } from "./code-anchors/types.js";
 import { gitHeadSha } from "../utils/git.js";
 import { defaultDatabasePath, openDatabase } from "../storage/sqlite/db.js";
 import type { AnchorFingerprintInput, SqliteRepository } from "../storage/sqlite/repository.js";
@@ -69,6 +73,12 @@ export interface AnchorInvalidationResult {
   memory_commit_id?: string;
   invalidated: AnchorInvalidationRecord[];
   errors: DriftScanError[];
+}
+
+export interface HealResult {
+  demoted: string[];
+  rechecked: number;
+  headSha?: string;
 }
 
 export class KnowledgeGraphService {
@@ -284,6 +294,92 @@ export class KnowledgeGraphService {
     };
   }
 
+  /**
+   * Change-scoped background heal. Re-checks only claims whose anchored files
+   * changed since `sinceSha` (undefined = full sweep), demotes the genuinely
+   * stale ones — structural OR content — through the same supersession writer as
+   * #96, drops their fingerprints, and advances the freshness checkpoint. Never
+   * demotes on `unknown` (unreadable / undeterminable). Deterministic: no agent.
+   */
+  async healDriftedAnchors(input: RepoRef, sinceSha?: string): Promise<HealResult> {
+    const initialized = this.requireRepo(input);
+    const headSha = gitHeadSha(input.repo_root);
+    const graph = this.repository.readGraphView(initialized.repo_id);
+
+    const candidates = this.healCandidates(graph.claims, input.repo_root, sinceSha);
+    if (candidates.length === 0) {
+      this.saveCheckpoint(initialized.repo_id, headSha);
+      return { demoted: [], rechecked: 0, headSha };
+    }
+
+    const resolver = new CodeAnchorResolver();
+    const storedByClaim = indexFingerprintsByClaim(this.repository.fingerprintsForClaims(candidates.map((claim) => claim.id)));
+    const demotions: ClaimDemotion[] = [];
+    let rechecked = 0;
+    for (const claim of candidates) {
+      try {
+        const resolved = await resolver.resolveMany(input.repo_root, claim.code_anchors ?? []);
+        rechecked += 1;
+        const verdict = classifyFreshness(freshnessChecks(resolved, storedByClaim.get(claim.id), input.repo_root));
+        const demotion = toDemotion(claim, verdict, resolved);
+        if (demotion !== undefined) demotions.push(demotion);
+      } catch {
+        // A resolver failure on one claim is skipped, never fatal to the pass.
+      }
+    }
+
+    if (demotions.length === 0) {
+      this.saveCheckpoint(initialized.repo_id, headSha);
+      return { demoted: [], rechecked, headSha };
+    }
+
+    const { proposal, events } = buildAnchorInvalidation(demotions, graph);
+    const working = this.repository.requireWorkingScope(initialized.repo_id);
+    const demoted = demotions.map((demotion) => demotion.claim.id);
+    this.repository.applyAnchorInvalidation({
+      repoId: initialized.repo_id,
+      scopeId: working.id,
+      proposal,
+      events,
+      commit: { title: proposal.title, git_commit_sha: headSha },
+      deleteFingerprintClaimIds: demoted,
+    });
+
+    // Embed the rebuilt claims so they stay retrievable via graph context.
+    await this.contextBuilder.ensureForGraph(
+      initialized.repo_id,
+      this.repository.readGraphView(initialized.repo_id),
+      this.contextConfig,
+    );
+    this.saveCheckpoint(initialized.repo_id, headSha);
+    return { demoted, rechecked, headSha };
+  }
+
+  /** The code_verified claims to re-check: the full set on a sweep, else only those in changed files. */
+  private healCandidates(claims: Claim[], repoRoot: string | undefined, sinceSha: string | undefined): Claim[] {
+    const codeVerified = claims.filter((claim) => claim.truth === "code_verified" && (claim.code_anchors?.length ?? 0) > 0);
+    if (sinceSha === undefined) return codeVerified; // first run / no checkpoint -> full sweep
+    const changed = changedFilesSince(repoRoot, sinceSha);
+    if (changed.length === 0) return [];
+    const affected = new Set(this.repository.claimIdsForFiles(changed)); // reverse index
+    return codeVerified.filter((claim) => affected.has(claim.id));
+  }
+
+  private saveCheckpoint(repoId: string, headSha: string | undefined): void {
+    if (headSha !== undefined) this.repository.setFreshnessCheckpoint(repoId, headSha);
+  }
+
+}
+
+const brokenAnchorStatuses: ReadonlySet<ResolvedCodeAnchorStatus> = new Set(invalidationResolverStatuses);
+
+/** Map a freshness verdict to a demotion, or undefined when the claim must be left alone. */
+function toDemotion(claim: Claim, verdict: FreshnessVerdict, resolved: ResolvedCodeAnchor[]): ClaimDemotion | undefined {
+  if (verdict.state !== "stale") return undefined; // fresh or unknown -> never demote
+  if (verdict.reason === "content") {
+    return { claim, reason: "content", anchors: resolved.filter((anchor) => !brokenAnchorStatuses.has(anchor.status)) };
+  }
+  return { claim, reason: "structural", anchors: verdict.broken };
 }
 
 function anchorAuditErrors(result: ClaimAnchorAuditResult): string[] {

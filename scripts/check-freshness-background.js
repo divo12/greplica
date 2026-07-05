@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -91,5 +91,55 @@ const structuralPlan = buildAnchorInvalidation(
 );
 assert.equal(structuralPlan.events[0].reason, "anchor_drift", "structural demotion -> anchor_drift event");
 assert.equal(structuralPlan.events[0].resolver_status, "missing_symbol", "structural event records the drift status");
+
+// ---------------------------------------------------------------------------
+// service.healDriftedAnchors: change-scoped structural + content heal
+// ---------------------------------------------------------------------------
+const { KnowledgeGraphService } = await import(new URL("dist/libs/knowledge-graph/service.js", root));
+const stubBuilder = { ensureForGraph: async () => ({ checked_objects: 0, created: 0, reused: 0 }) };
+
+const healRoot = mkdtempSync(join(tmpdir(), "greplica-heal-"));
+git(healRoot, "init", "-q");
+writeFileSync(join(healRoot, "a.ts"), "export function fa() { return 1; }\n");
+writeFileSync(join(healRoot, "b.ts"), "export function fb() { return 1; }\n");
+git(healRoot, "add", "-A");
+git(healRoot, "commit", "-qm", "seed");
+
+const healRepo = new SqliteRepository(openDatabase(join(mkdtempSync(join(tmpdir(), "greplica-heal-home-")), "graph.db")));
+const healSvc = new KnowledgeGraphService(healRepo, undefined, stubBuilder);
+const healRef = { repo_root: healRoot, repo_name: "heal", default_branch: "main" };
+healSvc.initRepo(healRef);
+await healSvc.applyProposal(healRef, { title: "seed", creates: { claims: [
+  { id: "claim.a", kind: "fact", text: "a", truth: "code_verified", intent: "intended", code_anchors: [{ file: "a.ts", symbol: "fa" }] },
+  { id: "claim.b", kind: "fact", text: "b", truth: "code_verified", intent: "intended", code_anchors: [{ file: "b.ts", symbol: "fb" }] },
+]}});
+const head = git(healRoot, "rev-parse", "HEAD");
+
+// Content-edit a.ts only (uncommitted). Heal must demote claim.a, not claim.b,
+// and only recheck the changed file's claim (reverse index).
+writeFileSync(join(healRoot, "a.ts"), "export function fa() { return 99999; }\n");
+const healed = await healSvc.healDriftedAnchors(healRef, head);
+assert.deepEqual(healed.demoted, ["claim.a"], "content-drifted claim demoted");
+assert.equal(healed.rechecked, 1, "only the changed file's claim was rechecked (reverse index)");
+assert.equal(typeof healed.headSha, "string", "heal returns the current HEAD sha");
+
+const g = healSvc.readGraph(healRef);
+assert.ok(g.claims.some((c) => c.id === "claim.b" && c.truth === "code_verified"), "unchanged claim untouched");
+assert.ok(g.claims.some((c) => c.truth === "unknown"), "drifted claim rebuilt as unknown");
+assert.ok(!g.claims.some((c) => c.id === "claim.a" && c.truth === "code_verified"), "original demoted");
+assert.equal(healRepo.fingerprintsForClaims(["claim.a"]).length, 0, "demoted claim fingerprints removed");
+
+// Second heal with no new edits -> idempotent no-op (early cutoff).
+const again = await healSvc.healDriftedAnchors(healRef, head);
+assert.deepEqual(again.demoted, [], "second heal demotes nothing (idempotent)");
+
+// Unknown never demotes: make b.ts unreadable, run a full sweep (no sinceSha).
+chmodSync(join(healRoot, "b.ts"), 0o000);
+const sweep = await healSvc.healDriftedAnchors(healRef);
+chmodSync(join(healRoot, "b.ts"), 0o644);
+assert.ok(!sweep.demoted.includes("claim.b"), "unreadable (unknown) claim is not demoted");
+
+// Checkpoint advanced to the current HEAD.
+assert.equal(healRepo.getFreshnessCheckpoint(healSvc.requireRepo(healRef).repo_id), head, "checkpoint set to HEAD");
 
 console.log("Freshness background checks passed.");
