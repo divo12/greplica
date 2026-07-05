@@ -1,3 +1,4 @@
+import type { FreshnessVerdict } from "../code-anchors/freshness.js";
 import type {
   GraphContextResult,
   RankedGraphContextResult,
@@ -95,12 +96,12 @@ function renderRankedClaims(
   });
 }
 
-function freshnessLabel(freshness: Extract<RankedGraphContextResult, { type: "claim" }>["freshness"]): string {
+function freshnessLabel(freshness: FreshnessVerdict): string {
   if (freshness.state === "stale") {
-    return ` ⚠ Stale (${freshness.reason} drift) — re-verify against the current code.`;
+    return ` [STALE: ${freshness.reason} drift — re-verify against the current code].`;
   }
   if (freshness.state === "unknown") {
-    return " ⚠ Freshness unverifiable (anchored code could not be read).";
+    return " [UNVERIFIABLE: anchored code could not be read].";
   }
   return "";
 }

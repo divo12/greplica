@@ -57,19 +57,16 @@ export class GraphContextBuilder {
       flows: this.rankDocuments(repoId, query, queryEmbedding, flowDocuments, config),
     };
     const ranked = applyGraphRanking(baseRanked, graph, config);
-    // Read-only freshness: resolve + label each claim fresh/stale/unknown against
-    // the working tree, using one batched fingerprint read. No graph writes here.
-    const selectedClaims = attachFreshness(
-      await selectClaims(
-        ranked.claims,
-        evidenceByClaim,
-        config,
-        this.codeAnchorResolver,
-        options.repoRoot,
-      ),
-      this.repository,
+    const claimResults = await selectClaims(
+      ranked.claims,
+      evidenceByClaim,
+      config,
+      this.codeAnchorResolver,
       options.repoRoot,
     );
+    // Read-only freshness: label each claim fresh/stale/unknown against the working
+    // tree using one batched fingerprint read. No graph writes on the query path.
+    const selectedClaims = attachFreshness(claimResults, this.repository, options.repoRoot);
     const selectedComponents = selectGraphObjects(
       ranked.components,
       selectedClaims,
