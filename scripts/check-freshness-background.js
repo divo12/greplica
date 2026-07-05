@@ -187,4 +187,21 @@ await healSvc.applyProposal(healRef, { title: "manual", creates: { claims: [
 ]}});
 assert.ok(!healSvc.reverifyWorklist(healRef, 10).some((c) => c.id === "claim.manual"), "non-drift unknown claim is not queued");
 
+// reverifyPrompt names the claims; runReverifyPass hands them to the agent runner.
+const { reverifyPrompt, runReverifyPass } = await import(new URL("dist/libs/hooks/worker.js", root));
+const driftedClaim = { id: "claim.x__drift", kind: "fact", text: "x does y", truth: "unknown", intent: "intended", code_anchors: [{ file: "a.ts", symbol: "fa" }] };
+
+const prompt = reverifyPrompt([driftedClaim], "/tmp/p.json");
+assert.ok(prompt.includes("claim.x__drift"), "prompt names the claim");
+assert.ok(prompt.includes("a.ts#fa"), "prompt names the anchor");
+assert.ok(/re-verify/i.test(prompt), "prompt asks to re-verify");
+
+let captured;
+await runReverifyPass({ runWorkingMemoryUpdate: async (input) => { captured = input.prompt; } }, healRoot, [driftedClaim]);
+assert.ok(captured.includes("claim.x__drift"), "runReverifyPass hands the worklist to the agent");
+
+let called = false;
+await runReverifyPass({ runWorkingMemoryUpdate: async () => { called = true; } }, healRoot, []);
+assert.equal(called, false, "empty worklist -> no agent spawn");
+
 console.log("Freshness background checks passed.");
