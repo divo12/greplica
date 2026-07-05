@@ -171,4 +171,20 @@ assert.equal(healCalls.length, 0, "autoHealDrift off -> no heal");
 await runDriftHealPass(fakeService, [r("/r1"), r("/r1"), r("/r2")], true, () => true, () => {});
 assert.deepEqual(healCalls, ["/r1", "/r2"], "heals each distinct repo once");
 
+// ---------------------------------------------------------------------------
+// Phase 4: demoted (truth:unknown) claims form the re-verify worklist
+// ---------------------------------------------------------------------------
+// (healSvc has demoted claim.a and claim.b to `unknown` in the steps above.)
+const worklist = healSvc.reverifyWorklist(healRef, 10);
+assert.ok(worklist.length > 0, "demoted claims are queued for re-verify");
+assert.ok(worklist.every((c) => c.truth === "unknown"), "worklist holds only unknown claims");
+assert.ok(worklist.some((c) => c.id === "claim.a__drift"), "the drift-demoted claim is queued");
+assert.equal(healSvc.reverifyWorklist(healRef, 1).length, 1, "worklist respects the limit");
+
+// A manually-created unknown claim (not drift-demoted) is NOT queued.
+await healSvc.applyProposal(healRef, { title: "manual", creates: { claims: [
+  { id: "claim.manual", kind: "question", text: "q", truth: "unknown", intent: "unknown" },
+]}});
+assert.ok(!healSvc.reverifyWorklist(healRef, 10).some((c) => c.id === "claim.manual"), "non-drift unknown claim is not queued");
+
 console.log("Freshness background checks passed.");
