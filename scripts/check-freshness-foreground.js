@@ -37,6 +37,7 @@ assert.equal(out[0].freshness.state, "fresh", "baseline matches current -> fresh
 // Change the body -> content drift (foreground detects it live).
 writeFileSync(join(repoRoot, "svc.ts"), "line1\nexport function handle() { return 99999; }\nline3\n");
 out = attachFreshness([claimResult("c1", [anchor])], repo, repoRoot);
+assert.equal(out[0].freshness.state, "stale", "changed body -> stale");
 assert.equal(out[0].freshness.reason, "content", "changed body -> content drift");
 
 // Unreadable anchor -> unknown.
@@ -45,6 +46,7 @@ assert.equal(out[0].freshness.state, "unknown", "unreadable anchor -> unknown");
 
 // All anchors broken -> structural.
 out = attachFreshness([claimResult("c3", [{ file: "svc.ts", symbol: "handle", status: "missing_symbol" }])], repo, repoRoot);
+assert.equal(out[0].freshness.state, "stale", "all broken -> stale");
 assert.equal(out[0].freshness.reason, "structural", "all broken -> structural");
 
 // Read-only: attachFreshness returns new objects, never mutates its input.

@@ -47,7 +47,9 @@ export function classifyFreshness(checks: AnchorCheck[]): FreshnessVerdict {
   }
 
   if (checks.some(isUndeterminable)) {
-    return { state: "unknown", reason: null, broken: [] };
+    // Freshness can't be proven, but still surface any anchors that broke
+    // structurally in the same claim (consistent with the content branch).
+    return { state: "unknown", reason: null, broken };
   }
 
   return fresh();

@@ -50,6 +50,13 @@ assert.equal(
   "content drift beats unknown",
 );
 
+// One anchor structurally broken, another undeterminable -> unknown, but the broken
+// anchor is still surfaced (Phase 3's healer needs to know which anchors broke).
+const brokenPlusUnknown = classifyFreshness([check(brokenAnchor, undefined, "h1"), check(resolvesAnchor, undefined, "h1")]);
+assert.equal(brokenPlusUnknown.state, "unknown", "partial break + undeterminable -> unknown");
+assert.equal(brokenPlusUnknown.broken.length, 1, "unknown verdict still surfaces the structurally-broken anchor");
+assert.equal(brokenPlusUnknown.broken[0].status, "missing_symbol", "the broken anchor is carried through");
+
 // --- storage layer: anchor_fingerprints table + repository ---
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
