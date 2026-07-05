@@ -142,4 +142,28 @@ assert.ok(!sweep.demoted.includes("claim.b"), "unreadable (unknown) claim is not
 // Checkpoint advanced to the current HEAD.
 assert.equal(healRepo.getFreshnessCheckpoint(healSvc.requireRepo(healRef).repo_id), head, "checkpoint set to HEAD");
 
+// ---------------------------------------------------------------------------
+// config default + worker drift-heal pass (dedupe + gate)
+// ---------------------------------------------------------------------------
+const { defaultSessionConfig } = await import(new URL("dist/libs/config/greplica-config.js", root));
+assert.equal(defaultSessionConfig.autoHealDrift, true, "autoHealDrift defaults on");
+
+const { runDriftHealPass } = await import(new URL("dist/libs/hooks/worker.js", root));
+const healCalls = [];
+const fakeService = {
+  healDriftedAnchorsFromCheckpoint: async (ref) => {
+    healCalls.push(ref.repo_root);
+    return { demoted: [], rechecked: 1 };
+  },
+};
+const r = (path) => ({ repo_root: path, repo_name: path, default_branch: "main" });
+
+// Gate off -> no heal.
+await runDriftHealPass(fakeService, [r("/r1")], false, () => true, () => {});
+assert.equal(healCalls.length, 0, "autoHealDrift off -> no heal");
+
+// Gate on -> each distinct repo healed once (deduped).
+await runDriftHealPass(fakeService, [r("/r1"), r("/r1"), r("/r2")], true, () => true, () => {});
+assert.deepEqual(healCalls, ["/r1", "/r2"], "heals each distinct repo once");
+
 console.log("Freshness background checks passed.");

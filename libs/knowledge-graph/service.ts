@@ -355,6 +355,12 @@ export class KnowledgeGraphService {
     return { demoted, rechecked, headSha };
   }
 
+  /** Heal using this repo's stored checkpoint as `sinceSha` (undefined -> full sweep). */
+  async healDriftedAnchorsFromCheckpoint(input: RepoRef): Promise<HealResult> {
+    const initialized = this.requireRepo(input);
+    return this.healDriftedAnchors(input, this.repository.getFreshnessCheckpoint(initialized.repo_id));
+  }
+
   /** The code_verified claims to re-check: the full set on a sweep, else only those in changed files. */
   private healCandidates(claims: Claim[], repoRoot: string | undefined, sinceSha: string | undefined): Claim[] {
     const codeVerified = claims.filter((claim) => claim.truth === "code_verified" && (claim.code_anchors?.length ?? 0) > 0);
