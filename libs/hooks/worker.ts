@@ -149,8 +149,18 @@ async function runReverifyForActiveRepos(
     seen.add(cwd);
     if (!renewLease()) return;
     const ref: RepoRef = { repo_root: cwd, repo_name: basename(cwd), default_branch: "main" };
-    await runReverifyPass(platformInstaller(attempt.session.platform), cwd, service.reverifyWorklist(ref, limit));
+    try {
+      await runReverifyPass(platformInstaller(attempt.session.platform), cwd, service.reverifyWorklist(ref, limit));
+    } catch (error) {
+      // One repo's failure (e.g. greplica not installed there) must not abort the
+      // whole pass; log it and keep draining the rest.
+      console.error(JSON.stringify({ event: "freshness_reverify_error", repo: basename(cwd), error: errorMessage(error) }));
+    }
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Hand the re-verify worklist to the agent runner. Empty worklist -> no agent spawn. */
